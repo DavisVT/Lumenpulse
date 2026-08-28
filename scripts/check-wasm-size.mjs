@@ -4,6 +4,10 @@ import path from "node:path";
 const root = path.resolve(process.cwd(), "target/wasm32-unknown-unknown/release");
 const budgetFile = path.resolve(process.cwd(), "wasm-budgets.json");
 const baselineFile = path.resolve(process.cwd(), "wasm-baseline.json");
+const baselineRootArgument = process.argv.indexOf("--baseline-root");
+const baselineRoot = baselineRootArgument === -1
+  ? null
+  : path.resolve(process.cwd(), process.argv[baselineRootArgument + 1]);
 const files = (await readdir(root).catch(() => [])).filter((name) => name.endsWith(".wasm"));
 
 if (files.length === 0) {
@@ -27,7 +31,9 @@ for (const file of files.sort()) {
     failed = true;
     continue;
   }
-  const baselineSize = baseline.contracts?.[contract];
+  const baselineSize = baselineRoot
+    ? (await stat(path.join(baselineRoot, file)).catch(() => null))?.size
+    : baseline.contracts?.[contract];
   const delta = Number.isInteger(baselineSize) ? size - baselineSize : null;
   const status = size > budget ? "FAIL" : "OK";
   if (status === "FAIL") failed = true;
