@@ -3,10 +3,26 @@ import { Repository } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { FeatureFlagsService } from './feature-flags.service';
 import { FeatureFlag } from './feature-flag.entity';
+import { FlagAuditLog } from './entities/flag-audit-log.entity';
+import { MetricsService } from '../metrics/metrics.service';
+
+/** Tiny stub for MetricsService — only the methods the service calls. */
+function makeMetricsStub() {
+  const counter = { inc: jest.fn() };
+  const histogram = { startTimer: jest.fn(() => jest.fn()) };
+  return {
+    getOrCreateCounter: jest.fn().mockReturnValue(counter),
+    getOrCreateHistogram: jest.fn().mockReturnValue(histogram),
+    _counter: counter,
+    _histogram: histogram,
+  };
+}
 
 describe('FeatureFlagsService', () => {
   let service: FeatureFlagsService;
   let repo: Partial<Repository<FeatureFlag>>;
+  let auditRepo: Partial<Repository<FlagAuditLog>>;
+  let metricsStub: ReturnType<typeof makeMetricsStub>;
 
   beforeEach(async () => {
     repo = {
@@ -23,10 +39,30 @@ describe('FeatureFlagsService', () => {
         .mockImplementation((x: Partial<FeatureFlag>) => x as FeatureFlag),
     };
 
+    auditRepo = {
+      find: jest.fn().mockResolvedValue([]),
+      save: jest
+        .fn()
+        .mockImplementation((x: Partial<FlagAuditLog>) =>
+          Promise.resolve({
+            ...(x as object),
+            id: 'audit-uuid',
+            changedAt: new Date(),
+          } as FlagAuditLog),
+        ),
+      create: jest
+        .fn()
+        .mockImplementation((x: Partial<FlagAuditLog>) => x as FlagAuditLog),
+    };
+
+    metricsStub = makeMetricsStub();
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         FeatureFlagsService,
         { provide: getRepositoryToken(FeatureFlag), useValue: repo },
+        { provide: getRepositoryToken(FlagAuditLog), useValue: auditRepo },
+        { provide: MetricsService, useValue: metricsStub },
       ],
     }).compile();
 
@@ -41,5 +77,158 @@ describe('FeatureFlagsService', () => {
     // ensure isEnabled uses cache and returns true
     const enabled = await service.isEnabled('test.feature');
     expect(enabled).toBe(true);
+  });
+
+  it('returns false for unknown flags without hitting DB again after upsert', async () => {
+    const enabled = await service.isEnabled('unknown.flag');
+    expect(enabled).toBe(false);
+  });
+
+  describe('TTL cache', () => {
+    it('records a cache miss on first getFlag and a hit on second (within TTL)', async () => {
+      const counterInc = metricsStub._counter.inc;
+
+      // First call → miss
+      await service.getFlag('some.flag');
+      // Second call within TTL → hit
+      await service.getFlag('some.flag');
+
+      // misses counter was incremented once, hits counter once
+      expect(counterInc).toHaveBeenCalledTimes(2);
+    });
+
+    it('invalidates cache immediately on upsert', async () => {
+      // Pre-populate cache
+      await service.getFlag('flag.a');
+
+      // Upsert should overwrite the entry immediately
+      await service.upsert('flag.a', true);
+
+      // Cache should now hold the saved value
+      const f = await service.getFlag('flag.a');
+      expect(f?.enabled).toBe(true);
+    });
+
+    it('evicts the entry immediately on remove', async () => {
+      await service.upsert('flag.b', true);
+      await service.remove('flag.b');
+
+      // After remove the entry must not exist in cache (Map#has = false)
+      // A getFlag call will trigger a DB miss → repo.findOne returns undefined
+      (repo.findOne as jest.Mock).mockResolvedValueOnce(undefined);
+      const f = await service.getFlag('flag.b');
+      expect(f).toBeNull();
+    });
+  });
+
+  describe('Audit logging', () => {
+    it('writes an audit entry on upsert', async () => {
+      await service.upsert('flag.audit', true, undefined, 'admin@test.com');
+      expect(auditRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          flagKey: 'flag.audit',
+          action: 'upsert',
+          newEnabled: true,
+          actor: 'admin@test.com',
+        }),
+      );
+      expect(auditRepo.save).toHaveBeenCalled();
+    });
+
+    it('writes an audit entry on remove', async () => {
+      await service.upsert('flag.remove', false);
+      await service.remove('flag.remove');
+      expect(auditRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          flagKey: 'flag.remove',
+          action: 'remove',
+          newEnabled: null,
+        }),
+      );
+    });
+
+    it('records previousEnabled correctly when flag existed', async () => {
+      // Simulate existing flag in repo
+      const existingFlag: FeatureFlag = {
+        id: 'existing-id',
+        key: 'flag.exists',
+        enabled: false,
+        conditions: null,
+        changedBy: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      (repo.findOne as jest.Mock).mockResolvedValueOnce(existingFlag);
+      // Also make getFlag cache miss populate with the existing flag
+      (repo.findOne as jest.Mock).mockResolvedValueOnce(existingFlag);
+
+      await service.upsert('flag.exists', true, undefined, 'alice');
+
+      const auditCreateCall = (auditRepo.create as jest.Mock).mock.calls.find(
+        (call) => call[0].flagKey === 'flag.exists',
+      );
+      expect(auditCreateCall).toBeDefined();
+      expect(auditCreateCall[0].previousEnabled).toBe(false);
+      expect(auditCreateCall[0].newEnabled).toBe(true);
+    });
+  });
+
+  describe('getFlagHistory', () => {
+    it('returns ordered audit history for a flag', async () => {
+      const mockHistory: Partial<FlagAuditLog>[] = [
+        {
+          id: '1',
+          flagKey: 'flag.hist',
+          action: 'upsert',
+          previousEnabled: null,
+          newEnabled: true,
+          actor: 'alice',
+          changedAt: new Date('2024-06-02'),
+        },
+        {
+          id: '2',
+          flagKey: 'flag.hist',
+          action: 'upsert',
+          previousEnabled: true,
+          newEnabled: false,
+          actor: 'bob',
+          changedAt: new Date('2024-06-01'),
+        },
+      ];
+      (auditRepo.find as jest.Mock).mockResolvedValueOnce(mockHistory);
+
+      const history = await service.getFlagHistory('flag.hist');
+      expect(history).toHaveLength(2);
+      expect(history[0].actor).toBe('alice');
+    });
+  });
+
+  describe('Metrics', () => {
+    it('registers Prometheus counters and histogram on construction', () => {
+      expect(metricsStub.getOrCreateCounter).toHaveBeenCalledWith(
+        'feature_flag_cache_hits_total',
+        expect.any(String),
+      );
+      expect(metricsStub.getOrCreateCounter).toHaveBeenCalledWith(
+        'feature_flag_cache_misses_total',
+        expect.any(String),
+      );
+      expect(metricsStub.getOrCreateHistogram).toHaveBeenCalledWith(
+        'feature_flag_evaluation_duration_seconds',
+        expect.any(String),
+        expect.any(Array),
+        expect.any(Array),
+      );
+    });
+
+    it('starts and ends evaluation latency timer on isEnabled', async () => {
+      const endTimer = jest.fn();
+      metricsStub._histogram.startTimer.mockReturnValueOnce(endTimer);
+
+      await service.isEnabled('any.flag');
+
+      expect(metricsStub._histogram.startTimer).toHaveBeenCalled();
+      expect(endTimer).toHaveBeenCalled();
+    });
   });
 });
