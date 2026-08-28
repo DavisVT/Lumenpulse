@@ -16,6 +16,9 @@ jobs:
   onchain-checks:
     name: Test Suite
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     defaults:
       run:
         working-directory: ./apps/onchain
@@ -43,6 +46,16 @@ jobs:
 
     - name: Build Contracts
       run: cargo build --target wasm32-unknown-unknown --release
+
+    - name: Report and enforce contract WASM sizes
+      run: node ../../scripts/check-wasm-size.mjs | tee wasm-size.md >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Add WASM size report to pull request
+      if: github.event_name == 'pull_request'
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        header: wasm-size
+        path: apps/onchain/wasm-size.md
 
     - name: Run tests
       if: env.SKIP_TESTS != 'true'
