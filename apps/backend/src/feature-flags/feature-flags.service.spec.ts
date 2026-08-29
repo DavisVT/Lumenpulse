@@ -6,23 +6,14 @@ import { FeatureFlag } from './feature-flag.entity';
 import { FlagAuditLog } from './entities/flag-audit-log.entity';
 import { MetricsService } from '../metrics/metrics.service';
 
-/** Tiny stub for MetricsService — only the methods the service calls. */
-function makeMetricsStub() {
-  const counter = { inc: jest.fn() };
-  const histogram = { startTimer: jest.fn(() => jest.fn()) };
-  return {
-    getOrCreateCounter: jest.fn().mockReturnValue(counter),
-    getOrCreateHistogram: jest.fn().mockReturnValue(histogram),
-    _counter: counter,
-    _histogram: histogram,
-  };
-}
-
 describe('FeatureFlagsService', () => {
   let service: FeatureFlagsService;
   let repo: Partial<Repository<FeatureFlag>>;
   let auditRepo: Partial<Repository<FlagAuditLog>>;
-  let metricsStub: ReturnType<typeof makeMetricsStub>;
+  let hitsCounter: { inc: jest.Mock };
+  let missesCounter: { inc: jest.Mock };
+  let latencyHistogram: { startTimer: jest.Mock };
+  let metricsService: Partial<MetricsService>;
 
   beforeEach(async () => {
     repo = {
@@ -55,14 +46,25 @@ describe('FeatureFlagsService', () => {
         .mockImplementation((x: Partial<FlagAuditLog>) => x as FlagAuditLog),
     };
 
-    metricsStub = makeMetricsStub();
+    hitsCounter = { inc: jest.fn() };
+    missesCounter = { inc: jest.fn() };
+    latencyHistogram = { startTimer: jest.fn(() => jest.fn()) };
+
+    metricsService = {
+      getOrCreateCounter: jest.fn().mockImplementation((name: string) => {
+        if (name === 'feature_flag_cache_hits_total') return hitsCounter;
+        if (name === 'feature_flag_cache_misses_total') return missesCounter;
+        return { inc: jest.fn() };
+      }),
+      getOrCreateHistogram: jest.fn().mockReturnValue(latencyHistogram),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         FeatureFlagsService,
         { provide: getRepositoryToken(FeatureFlag), useValue: repo },
         { provide: getRepositoryToken(FlagAuditLog), useValue: auditRepo },
-        { provide: MetricsService, useValue: metricsStub },
+        { provide: MetricsService, useValue: metricsService },
       ],
     }).compile();
 
@@ -86,15 +88,13 @@ describe('FeatureFlagsService', () => {
 
   describe('TTL cache', () => {
     it('records a cache miss on first getFlag and a hit on second (within TTL)', async () => {
-      const counterInc = metricsStub._counter.inc;
-
       // First call → miss
       await service.getFlag('some.flag');
+      expect(missesCounter.inc).toHaveBeenCalledTimes(1);
+
       // Second call within TTL → hit
       await service.getFlag('some.flag');
-
-      // misses counter was incremented once, hits counter once
-      expect(counterInc).toHaveBeenCalledTimes(2);
+      expect(hitsCounter.inc).toHaveBeenCalledTimes(1);
     });
 
     it('invalidates cache immediately on upsert', async () => {
@@ -148,7 +148,6 @@ describe('FeatureFlagsService', () => {
     });
 
     it('records previousEnabled correctly when flag existed', async () => {
-      // Simulate existing flag in repo
       const existingFlag: FeatureFlag = {
         id: 'existing-id',
         key: 'flag.exists',
@@ -158,18 +157,19 @@ describe('FeatureFlagsService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      (repo.findOne as jest.Mock).mockResolvedValueOnce(existingFlag);
-      // Also make getFlag cache miss populate with the existing flag
-      (repo.findOne as jest.Mock).mockResolvedValueOnce(existingFlag);
+      (repo.findOne as jest.Mock).mockResolvedValue(existingFlag);
 
       await service.upsert('flag.exists', true, undefined, 'alice');
 
-      const auditCreateCall = (auditRepo.create as jest.Mock).mock.calls.find(
-        (call) => call[0].flagKey === 'flag.exists',
+      expect(auditRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          flagKey: 'flag.exists',
+          action: 'upsert',
+          previousEnabled: false,
+          newEnabled: true,
+          actor: 'alice',
+        }),
       );
-      expect(auditCreateCall).toBeDefined();
-      expect(auditCreateCall[0].previousEnabled).toBe(false);
-      expect(auditCreateCall[0].newEnabled).toBe(true);
     });
   });
 
@@ -200,20 +200,24 @@ describe('FeatureFlagsService', () => {
       const history = await service.getFlagHistory('flag.hist');
       expect(history).toHaveLength(2);
       expect(history[0].actor).toBe('alice');
+      expect(auditRepo.find).toHaveBeenCalledWith({
+        where: { flagKey: 'flag.hist' },
+        order: { changedAt: 'DESC' },
+      });
     });
   });
 
   describe('Metrics', () => {
     it('registers Prometheus counters and histogram on construction', () => {
-      expect(metricsStub.getOrCreateCounter).toHaveBeenCalledWith(
+      expect(metricsService.getOrCreateCounter).toHaveBeenCalledWith(
         'feature_flag_cache_hits_total',
         expect.any(String),
       );
-      expect(metricsStub.getOrCreateCounter).toHaveBeenCalledWith(
+      expect(metricsService.getOrCreateCounter).toHaveBeenCalledWith(
         'feature_flag_cache_misses_total',
         expect.any(String),
       );
-      expect(metricsStub.getOrCreateHistogram).toHaveBeenCalledWith(
+      expect(metricsService.getOrCreateHistogram).toHaveBeenCalledWith(
         'feature_flag_evaluation_duration_seconds',
         expect.any(String),
         expect.any(Array),
@@ -223,11 +227,11 @@ describe('FeatureFlagsService', () => {
 
     it('starts and ends evaluation latency timer on isEnabled', async () => {
       const endTimer = jest.fn();
-      metricsStub._histogram.startTimer.mockReturnValueOnce(endTimer);
+      latencyHistogram.startTimer.mockReturnValueOnce(endTimer);
 
       await service.isEnabled('any.flag');
 
-      expect(metricsStub._histogram.startTimer).toHaveBeenCalled();
+      expect(latencyHistogram.startTimer).toHaveBeenCalled();
       expect(endTimer).toHaveBeenCalled();
     });
   });
