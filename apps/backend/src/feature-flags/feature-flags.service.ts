@@ -130,7 +130,12 @@ export class FeatureFlagsService implements OnModuleInit {
     conditions?: Record<string, unknown>,
     changedBy?: string,
   ) {
-    const prev = await this.getFlag(key);
+    // Snapshot the previous enabled state as a primitive BEFORE we fetch the
+    // mutable entity.  If we kept a reference to the entity object, mutating
+    // f.enabled below would silently change `prevFlag.enabled` too (aliasing).
+    const prevFlag = await this.getFlag(key);
+    const previousEnabled: boolean | null = prevFlag?.enabled ?? null;
+
     let f = await this.repo.findOne({ where: { key } });
     if (!f) {
       f = this.repo.create({
@@ -157,14 +162,14 @@ export class FeatureFlagsService implements OnModuleInit {
     const auditEntry = this.auditRepo.create({
       flagKey: key,
       action: 'upsert',
-      previousEnabled: prev?.enabled ?? null,
+      previousEnabled,
       newEnabled: enabled,
       actor: changedBy ?? null,
     });
     await this.auditRepo.save(auditEntry);
 
     this.logger.log(
-      `Flag "${key}" changed: ${prev?.enabled ?? 'N/A'} -> ${enabled}` +
+      `Flag "${key}" changed: ${previousEnabled ?? 'N/A'} -> ${enabled}` +
         (changedBy ? ` by ${changedBy}` : ''),
     );
 
