@@ -25,9 +25,11 @@ For a step-by-step guide to running the complete LumenPulse stack locally—incl
 
 LumenPulse has migrated to Stellar/Soroban architecture. For details on changes from prior chain assumptions, completed migrations, and legacy cleanup, see [Stellar Migration Notes](document/STELLAR_MIGRATION_NOTES.md).
 
-## Architecture Decisions
+## Architecture Decisions & Operational Playbooks
 
 The repository keeps design rationale alongside implementation notes. The ADR log captures why key choices were made and which trade-offs were considered: [doc/adr/README.md](doc/adr/README.md).
+
+For smart contract maintainers managing on-chain testnet releases, canonical manifests, upgrades, and emergency halt procedures, see the **[Contract Deployment & Rollback Playbook](document/CONTRACT_DEPLOYMENT_ROLLBACK_PLAYBOOK.md)** and the **[Smart Contract Interface Reference](document/SMART_CONTRACTS.md)**.
 
 Related implementation summaries remain cross-referenced there so the historical write-ups and the decision records stay connected.
 
