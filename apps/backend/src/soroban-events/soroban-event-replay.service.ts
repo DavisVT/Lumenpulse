@@ -142,7 +142,7 @@ export class SorobanEventReplayService {
    * Convenience wrapper that delegates to the indexer's existing backfill
    * for backwards compatibility, but scoped to a contract when provided.
    */
-  async backfill(fromLedger: number, contractId?: string): Promise<{ indexed: number }> {
+  async backfill(fromLedger: number): Promise<{ indexed: number }> {
     return this.indexerService.backfill(fromLedger);
   }
 
