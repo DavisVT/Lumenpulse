@@ -21,6 +21,12 @@ Designed for crypto enthusiasts, traders, and developers worldwide, LumenPulse s
 
 For a step-by-step guide to running the complete LumenPulse stack locally—including wallet setup, Soroban tooling, environment variables, seeded data, and service startup order—see **[document/LOCAL_SETUP.md](document/LOCAL_SETUP.md)**.
 
+### Testnet Operations
+
+For testnet deployment checks, smoke checks, failure escalation, rollback
+signals, and routine maintenance, see the
+[Testnet Operations Runbook](document/TESTNET_OPERATIONS_RUNBOOK.md).
+
 ## Migration Notes
 
 LumenPulse has migrated to Stellar/Soroban architecture. For details on changes from prior chain assumptions, completed migrations, and legacy cleanup, see [Stellar Migration Notes](document/STELLAR_MIGRATION_NOTES.md).
