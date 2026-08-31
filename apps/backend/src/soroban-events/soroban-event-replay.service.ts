@@ -14,7 +14,6 @@ import { ReplaySorobanRangeResponseDto } from './dto/replay-range.dto';
 
 const REPLAY_JOB_NAME = 'soroban-event-replay';
 const GLOBAL_CURSOR_KEY = '__global__';
-const MAX_LEDGER_RANGE_PER_RUN = 1000;
 const PAGE_LIMIT = 100;
 
 /**
@@ -98,7 +97,6 @@ export class SorobanEventReplayService {
       const result = await this.indexLedgerRange(
         startLedger,
         effectiveEndLedger,
-        contractId ?? undefined,
         dryRun,
       );
 
@@ -154,7 +152,6 @@ export class SorobanEventReplayService {
   private async indexLedgerRange(
     startLedger: number,
     endLedger: number,
-    contractId?: string,
     dryRun = false,
   ): Promise<{ totalEvents: number; indexed: number; skipped: number }> {
     const server = this.rpcClient.rawServer;
