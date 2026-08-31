@@ -27,6 +27,7 @@ const PAGE_LIMIT = 100;
  */
 @Injectable()
 export class SorobanEventReplayService {
+  // Replay runs independently of live indexing (separate advisory lock).
   private readonly logger = new Logger(SorobanEventReplayService.name);
 
   constructor(
